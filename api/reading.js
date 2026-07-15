@@ -1,14 +1,16 @@
 // ============================================================
-//  api/reading.js  — backend da IA de tarô (Gemini) — v3 (diagnóstico)
+//  api/reading.js  — backend da IA de tarô (Gemini) — v4
 // ------------------------------------------------------------
-//  Igual à v2 (thinking desligado), MAIS:
-//   - sempre inclui "_v":"v3" na resposta (pra confirmar que o código novo subiu)
-//   - se vier vazio, inclui "_debug" com o motivo exato
+//  NOVIDADE: as 3 vozes agora batem com os estilos do app:
+//    "misticista" | "pragmatico" | "poeta"
+//  (aceita com/sem acento e maiúsculas; e ainda entende
+//   isis/rafael/luna pra não quebrar a página de teste)
 //
-//  VAI EM: api/reading.js   |   VARIÁVEL NA VERCEL: GEMINI_API_KEY
+//  VAI EM: api/reading.js
+//  VARIÁVEIS NA VERCEL: GEMINI_API_KEY  |  GEMINI_MODEL = gemini-3.5-flash
 // ============================================================
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash";
 
 const BASE = `Você é um(a) leitor(a) de oráculos experiente e acolhedor(a), fazendo uma leitura personalizada em português do Brasil.
 
@@ -25,11 +27,32 @@ CONTEÚDO
 SEGURANÇA (prioridade máxima)
 - Se a pergunta indicar sofrimento intenso, desesperança, ideação suicida ou automutilação: NÃO faça leitura de cartas. Responda com acolhimento breve e humano, diga que a pessoa não está sozinha e sugira apoio real — no Brasil, o CVV (ligue 188, 24h, gratuito e sigiloso). Coloque esse acolhimento no campo "reading" e deixe os outros vazios.`;
 
+// ---- As 3 vozes do app ----
 const PERSONAS = {
-  isis: "Você é a Dona Ísis: calorosa e maternal. Valida os sentimentos da pessoa antes de interpretar. Linguagem simples e afetuosa.",
-  rafael: "Você é o Rafael: direto, prático e objetivo, mas gentil. Corta o floreio e sempre termina com uma ação concreta.",
-  luna: "Você é a Luna: mística e poética. Fala em imagens e símbolos, mas termina com uma mensagem clara.",
+  misticista:
+    "Você é o(a) Misticista: espiritual, intuitivo(a) e conectado(a) às energias. Fala do que as cartas revelam no plano sutil, dos símbolos e dos sinais, com uma aura de mistério — mas sempre traduz tudo numa mensagem clara e útil no final.",
+  pragmatico:
+    "Você é o(a) Pragmático(a): direto(a), prático(a) e pé no chão, mas gentil. Sem floreio: diz o que as cartas indicam de forma objetiva e sempre termina com um passo concreto que a pessoa pode dar.",
+  poeta:
+    "Você é o(a) Poeta: lírico(a) e sensível. Transforma as cartas em imagens, metáforas e uma pequena narrativa bonita — mas fecha sempre com uma mensagem clara que a pessoa leva pra vida.",
 };
+
+// aliases pra aceitar variações (e não quebrar a página de teste antiga)
+const ALIASES = {
+  mistico: "misticista", mistica: "misticista", misticismo: "misticista", isis: "misticista",
+  pragmatica: "pragmatico", pratico: "pragmatico", pratica: "pragmatico", direto: "pragmatico", rafael: "pragmatico",
+  poetisa: "poeta", poetico: "poeta", poetica: "poeta", poesia: "poeta", luna: "poeta",
+};
+
+function norm(s) {
+  return String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+}
+function resolvePersona(key) {
+  const k = norm(key);
+  if (PERSONAS[k]) return k;
+  if (ALIASES[k]) return ALIASES[k];
+  return "misticista";
+}
 
 const ORACLES = {
   tarot: "Oráculo: Tarô. Interprete cada arcano pelo significado tradicional, considerando se está invertida e a posição na tiragem.",
@@ -53,7 +76,7 @@ function outputInstruction(mode) {
 }
 
 function buildSystem(persona, oracle, mode) {
-  const p = PERSONAS[persona] || PERSONAS.isis;
+  const p = PERSONAS[resolvePersona(persona)];
   const o = oracle ? ORACLES[oracle] || ORACLES.tarot : ORACLES.tarot;
   return [BASE, p, o, outputInstruction(mode)].join("\n\n");
 }
@@ -81,7 +104,7 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed", _v: "v3" });
+  if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed", _v: "v4" });
 
   try {
     const input =
@@ -93,7 +116,7 @@ module.exports = async function handler(req, res) {
 
     const body = {
       systemInstruction: {
-        parts: [{ text: buildSystem(input.persona || "isis", input.oracle || null, mode) }],
+        parts: [{ text: buildSystem(input.persona || "misticista", input.oracle || null, mode) }],
       },
       contents: [{ role: "user", parts: [{ text: buildUserMessage(input) }] }],
       generationConfig: {
@@ -119,8 +142,7 @@ module.exports = async function handler(req, res) {
       "";
 
     const parsed = safeParse(text);
-    parsed._v = "v3"; // etiqueta de versão: se aparecer, o código novo está no ar
-
+    parsed._v = "v4";
     if (!parsed.reading) {
       parsed._debug = {
         finishReason: cand && cand.finishReason,
@@ -130,9 +152,8 @@ module.exports = async function handler(req, res) {
         model: MODEL,
       };
     }
-
     return res.status(200).json(parsed);
   } catch (e) {
-    return res.status(500).json({ error: "reading_failed", detail: String((e && e.message) || e), _v: "v3" });
+    return res.status(500).json({ error: "reading_failed", detail: String((e && e.message) || e), _v: "v4" });
   }
 };
