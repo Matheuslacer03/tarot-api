@@ -1,12 +1,11 @@
 // ============================================================
-//  api/reading.js  — backend da IA de tarô (Gemini, GRÁTIS) — v2 (corrigido)
+//  api/reading.js  — backend da IA de tarô (Gemini) — v3 (diagnóstico)
 // ------------------------------------------------------------
-//  CORREÇÃO desta versão: desliga o "pensamento" do Gemini (thinkingBudget: 0)
-//  e aumenta o limite de tokens — resolve a resposta vazia.
+//  Igual à v2 (thinking desligado), MAIS:
+//   - sempre inclui "_v":"v3" na resposta (pra confirmar que o código novo subiu)
+//   - se vier vazio, inclui "_debug" com o motivo exato
 //
-//  VAI EM: api/reading.js (no repo da Vercel)
-//  VARIÁVEL NA VERCEL: GEMINI_API_KEY = sua chave do Google AI Studio
-//  (opcional) GEMINI_MODEL = gemini-2.5-flash
+//  VAI EM: api/reading.js   |   VARIÁVEL NA VERCEL: GEMINI_API_KEY
 // ============================================================
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
@@ -82,14 +81,12 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed" });
+  if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed", _v: "v3" });
 
   try {
     const input =
       typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
     const mode = input.mode || "short";
-
-    // >>> CORREÇÃO: limite maior, já que agora o "pensamento" está desligado
     const maxTokens = mode === "full" ? 2048 : 1024;
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`;
@@ -102,7 +99,6 @@ module.exports = async function handler(req, res) {
       generationConfig: {
         maxOutputTokens: maxTokens,
         responseMimeType: "application/json",
-        // >>> CORREÇÃO: desliga o "pensamento" pra não consumir o orçamento da resposta
         thinkingConfig: { thinkingBudget: 0 },
       },
     };
@@ -123,11 +119,20 @@ module.exports = async function handler(req, res) {
       "";
 
     const parsed = safeParse(text);
-    // Se ainda vier vazio, mostra o motivo pra facilitar o diagnóstico:
-    if (!parsed.reading && cand && cand.finishReason) parsed._debug = cand.finishReason;
+    parsed._v = "v3"; // etiqueta de versão: se aparecer, o código novo está no ar
+
+    if (!parsed.reading) {
+      parsed._debug = {
+        finishReason: cand && cand.finishReason,
+        blockReason: data && data.promptFeedback && data.promptFeedback.blockReason,
+        apiError: data && data.error && (data.error.message || data.error.status),
+        rawLen: text.length,
+        model: MODEL,
+      };
+    }
 
     return res.status(200).json(parsed);
   } catch (e) {
-    return res.status(500).json({ error: "reading_failed", detail: String((e && e.message) || e) });
+    return res.status(500).json({ error: "reading_failed", detail: String((e && e.message) || e), _v: "v3" });
   }
 };
