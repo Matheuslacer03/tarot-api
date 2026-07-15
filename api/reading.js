@@ -1,14 +1,12 @@
 // ============================================================
-//  api/reading.js  — backend da IA de tarô (Gemini, GRÁTIS)
+//  api/reading.js  — backend da IA de tarô (Gemini, GRÁTIS) — v2 (corrigido)
 // ------------------------------------------------------------
-//  ONDE VAI: no repo da Vercel, dentro da pasta "api", com o nome "reading.js"
-//            (ou seja: api/reading.js). O endereço final fica .../api/reading
+//  CORREÇÃO desta versão: desliga o "pensamento" do Gemini (thinkingBudget: 0)
+//  e aumenta o limite de tokens — resolve a resposta vazia.
 //
-//  VARIÁVEL DE AMBIENTE (no painel da Vercel, nunca no app):
-//    GEMINI_API_KEY = sua chave do Google AI Studio
-//    GEMINI_MODEL   = opcional (padrão: gemini-2.5-flash)
-//
-//  NÃO precisa instalar nada. Um arquivo só.
+//  VAI EM: api/reading.js (no repo da Vercel)
+//  VARIÁVEL NA VERCEL: GEMINI_API_KEY = sua chave do Google AI Studio
+//  (opcional) GEMINI_MODEL = gemini-2.5-flash
 // ============================================================
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
@@ -80,7 +78,6 @@ function safeParse(text) {
 }
 
 module.exports = async function handler(req, res) {
-  // CORS (permite o app chamar a função)
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -91,7 +88,9 @@ module.exports = async function handler(req, res) {
     const input =
       typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
     const mode = input.mode || "short";
-    const maxTokens = mode === "full" ? 800 : 400;
+
+    // >>> CORREÇÃO: limite maior, já que agora o "pensamento" está desligado
+    const maxTokens = mode === "full" ? 2048 : 1024;
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`;
 
@@ -100,7 +99,12 @@ module.exports = async function handler(req, res) {
         parts: [{ text: buildSystem(input.persona || "isis", input.oracle || null, mode) }],
       },
       contents: [{ role: "user", parts: [{ text: buildUserMessage(input) }] }],
-      generationConfig: { maxOutputTokens: maxTokens, responseMimeType: "application/json" },
+      generationConfig: {
+        maxOutputTokens: maxTokens,
+        responseMimeType: "application/json",
+        // >>> CORREÇÃO: desliga o "pensamento" pra não consumir o orçamento da resposta
+        thinkingConfig: { thinkingBudget: 0 },
+      },
     };
 
     const r = await fetch(url, {
@@ -110,20 +114,20 @@ module.exports = async function handler(req, res) {
     });
 
     const data = await r.json();
+    const cand = data && data.candidates && data.candidates[0];
     const text =
-      (data &&
-        data.candidates &&
-        data.candidates[0] &&
-        data.candidates[0].content &&
-        data.candidates[0].content.parts &&
-        data.candidates[0].content.parts.map((p) => p.text).join("")) ||
+      (cand &&
+        cand.content &&
+        cand.content.parts &&
+        cand.content.parts.map((p) => p.text).join("")) ||
       "";
 
-    return res.status(200).json(safeParse(text));
+    const parsed = safeParse(text);
+    // Se ainda vier vazio, mostra o motivo pra facilitar o diagnóstico:
+    if (!parsed.reading && cand && cand.finishReason) parsed._debug = cand.finishReason;
+
+    return res.status(200).json(parsed);
   } catch (e) {
     return res.status(500).json({ error: "reading_failed", detail: String((e && e.message) || e) });
   }
 };
-
-// Se der erro de modelo, confira o nome do modelo Flash grátis atual em aistudio.google.com
-// e ajuste a variável GEMINI_MODEL na Vercel.
