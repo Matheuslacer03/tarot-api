@@ -194,9 +194,13 @@ function memRateLimit(ip, max, windowS, note) {
   if (memBuckets.size > 5000) memBuckets.clear(); // guarda contra vazamento
   return { ok: hits.length <= max, backend: "memory", count: hits.length, note: note || "" };
 }
+// remove aspas/espaços acidentais (ex.: valor colado do formato .env com "...")
+function cleanEnv(v) {
+  return String(v || "").trim().replace(/^["']|["']$/g, "");
+}
 async function upstashRateLimit(ip, max, windowS) {
-  const base = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const base = cleanEnv(process.env.UPSTASH_REDIS_REST_URL);
+  const token = cleanEnv(process.env.UPSTASH_REDIS_REST_TOKEN);
   const key = `rl:${ip}:${Math.floor(Date.now() / (windowS * 1000))}`;
   const r = await fetch(`${base}/pipeline`, {
     method: "POST",
