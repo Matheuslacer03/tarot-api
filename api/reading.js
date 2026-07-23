@@ -183,15 +183,16 @@ function robustParse(text) {
 }
 
 // ---- rate limiting ----
+// Retorna { ok, backend, count, note } — backend/note ajudam no diagnóstico (DEBUG).
 const memBuckets = new Map(); // fallback in-memory (por instância)
-function memRateLimit(ip, max, windowS) {
+function memRateLimit(ip, max, windowS, note) {
   const now = Date.now();
   const winStart = now - windowS * 1000;
   const hits = (memBuckets.get(ip) || []).filter((t) => t > winStart);
   hits.push(now);
   memBuckets.set(ip, hits);
   if (memBuckets.size > 5000) memBuckets.clear(); // guarda contra vazamento
-  return hits.length <= max;
+  return { ok: hits.length <= max, backend: "memory", count: hits.length, note: note || "" };
 }
 async function upstashRateLimit(ip, max, windowS) {
   const base = process.env.UPSTASH_REDIS_REST_URL;
@@ -200,12 +201,15 @@ async function upstashRateLimit(ip, max, windowS) {
   const r = await fetch(`${base}/pipeline`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify([["INCR", key], ["EXPIRE", key, windowS, "NX"]]),
+    body: JSON.stringify([["INCR", key], ["EXPIRE", key, String(windowS)]]),
   });
-  if (!r.ok) throw new Error("upstash " + r.status);
+  if (!r.ok) {
+    const body = await r.text().catch(() => "");
+    throw new Error("upstash HTTP " + r.status + " " + body.slice(0, 120));
+  }
   const out = await r.json();
-  const count = Number(out?.[0]?.result || 0);
-  return count <= max;
+  const count = Number((out && out[0] && out[0].result) || 0);
+  return { ok: count <= max, backend: "upstash", count, note: "" };
 }
 async function checkRateLimit(ip) {
   const max = Number(process.env.RATE_LIMIT_MAX || 20);
@@ -213,11 +217,11 @@ async function checkRateLimit(ip) {
   if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
     try {
       return await upstashRateLimit(ip, max, windowS);
-    } catch {
-      return memRateLimit(ip, max, windowS); // Upstash fora do ar → não derruba a API
+    } catch (e) {
+      return memRateLimit(ip, max, windowS, "upstash_falhou: " + String(e && e.message || e)); // não derruba a API
     }
   }
-  return memRateLimit(ip, max, windowS);
+  return memRateLimit(ip, max, windowS, "sem_env_upstash");
 }
 
 function clientIp(req) {
@@ -257,9 +261,10 @@ module.exports = async function handler(req, res) {
   }
 
   // rate limiting por IP
+  let rl = null;
   try {
-    const ok = await checkRateLimit(clientIp(req));
-    if (!ok) return fail(res, 429, "rate_limited");
+    rl = await checkRateLimit(clientIp(req));
+    if (rl && !rl.ok) return fail(res, 429, "rate_limited");
   } catch {
     // erro no rate limiter nunca deve bloquear o serviço
   }
@@ -269,7 +274,11 @@ module.exports = async function handler(req, res) {
       typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
 
     const invalid = validate(input);
-    if (invalid) return fail(res, 400, DEBUG ? invalid : "invalid_input");
+    if (invalid) {
+      const out = { error: DEBUG ? invalid : "invalid_input", _v: "v5" };
+      if (DEBUG && rl) out._rl = rl;
+      return res.status(400).json(out);
+    }
 
     const mode = input.mode || "short";
     const maxTokens = mode === "full" ? 2048 : 1024;
@@ -305,6 +314,7 @@ module.exports = async function handler(req, res) {
 
     const parsed = robustParse(text);
     parsed._v = "v5";
+    if (DEBUG && rl) parsed._rl = rl;
     if (!parsed.reading && DEBUG) {
       parsed._debug = {
         finishReason: cand && cand.finishReason,
